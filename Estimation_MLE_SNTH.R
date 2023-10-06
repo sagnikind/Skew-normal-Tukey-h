@@ -14,20 +14,14 @@ h = c(0.02,0.08,0.03)
 
 # Generation from SNTH distribution
 X = rmvnorm(n = N,mean = rep(0,p),sigma = Psi_bar)
-Z = matrix(nrow = N,ncol = p)
-for(i in 1:N){
-  Z[i,] = eta*abs(rnorm(1)) + X[i,]
-}
+Z = abs(rnorm(N))%*%t(eta) + X
 tau_h = function(x){
   for(i in 1:p){
-    x[i] = x[i]*exp(0.5*h[i]*x[i]^2)
+    x[i] =xi[i] + omega[i,i]* x[i]*exp(0.5*h[i]*x[i]^2)
   }
   return(x)
 }
-Y = matrix(nrow = N,ncol = p)
-for(i in 1:N){
-  Y[i,] = xi + omega%*%tau_h(Z[i,])
-}
+Y = t(apply(Z,MARGIN = 1,FUN = tau_h))
 
 
 # marginal MLE estimation 
@@ -48,110 +42,71 @@ for(k in 1:p){
       return(z*exp(-0.5*W(h*z^2)))
     }
     
-    llh = 0
-    for (i in 1:N) {
-      z = (Y[i,k] - xi)/omega
-      
-      llh = llh + log(1/omega) + 0.5*W(h*z^2) - log(h*z^2 + exp(W(h*z^2))) + log(2) + log(1/sqrt(2*pi)) - 0.5*log(1+eta^2)- 0.5*g(z)^2/(1+eta^2) + log(pnorm(eta*g(z)/sqrt(1+eta^2)))
-    }
-    return(llh)
+    z = (Y[,k] - xi)/omega
+    llh = -log(omega) + 0.5*W(h*z^2) - log(h*z^2 + exp(W(h*z^2))) + 0.5*log(2) - 0.5*log(pi) - 0.5*log(1+eta^2)- 0.5*g(z)^2/(1+eta^2) + pnorm(eta*g(z)/sqrt(1+eta^2),log.p = TRUE)
+    return(sum(llh))
   }
   negative_llh = function(theta){
     return(-marginal_llh(theta))
   }
-  H_optim = optim(c(mean(Y[,k]),log(sd(Y[,k])),skewness(Y[,k])/sqrt(1+skewness(Y[,k])^2),log(kurtosis(Y[,k])/sqrt(1+kurtosis(Y[,k])^2))),negative_llh)
+  H_optim = optim(c(mean(Y[,k]),log(sd(Y[,k])),skewness(Y[,k])/sqrt(1+skewness(Y[,k])^2),log(kurtosis(Y[,k])/sqrt(1+kurtosis(Y[,k])^2))),negative_llh,method = "BFGS")
   xi_est[k] = H_optim$par[1]
   omega_est[k] = exp(H_optim$par[2])
   eta_est[k] = H_optim$par[3]
   h_est[k] = exp(H_optim$par[4])
   
-  for(i in 1:N){
-    tau_h_Z_est[i,k] = (Y[i,k] - xi_est[k])/omega_est[k]
-  }
+  tau_h_Z_est[,k] = (Y[,k] - xi_est[k])/omega_est[k]
   
-  tukey_h_univariate = function(z,h){
-    return(z*exp(0.5*h*z^2))
-  }
-  
-  for(i in 1:N){
-    f = function(x){
-      return(tau_h_Z_est[i,k] - tukey_h_univariate(x,h_est[k]))
-    }
-    Z_est[i,k] = uniroot(f,c(-100,100),tol=10^-9)$root
-  }
+  Z_est[,k] = W_delta(tau_h_Z_est[,k], h_est[k])
 }
 
 ## marginal MLE done ##
 ## estimates are: xi_est, omega_est, eta_est, h_est
 
 ## EM for SN ##
+sum_of_square = function(x){
+  return(sum(x^2))
+}
 
 llh_SN = function(Psi_0){
   Omega_0 = Psi_0 + eta_est%*%t(eta_est)
-  llh = 0
-  for(i in 1:N){
-    temp_1 = 0.5*as.numeric(t(Z_est[i,])%*%solve(Omega_0)%*%(Z_est[i,]))
-    temp_2 = as.numeric(t(eta_est)%*%solve(Psi_0)%*%Z_est[i,]) / sqrt(1 + as.numeric(t(eta_est)%*%solve(Psi_0)%*%eta_est))
-    llh = llh + log(2) - p*0.5*log(2*pi) - 0.5*log(det(Omega_0)) - temp_1 + log(pnorm(temp_2))
-  }
-  return(llh)
+  Inv_Omega_0 = solve(Omega_0)
+  chol_Inv_Omega_0 = t(chol(Inv_Omega_0))
+  
+  Inv_Psi_0 = solve(Psi_0)
+  
+  m_1 = Z_est%*%t(chol(Inv_Omega_0))
+  temp_1 = 0.5*apply(m_1,1,FUN = sum_of_square)
+  temp_2 = (Z_est)%*%Inv_Psi_0%*%eta_est/sqrt(1 + as.numeric(t(eta_est)%*%Inv_Psi_0%*%eta_est))
+  
+  llh = log(2) - p*0.5*log(2*pi) - 0.5*log(det(Omega_0)) - temp_1 + pnorm(temp_2,log.p = TRUE)
+  return(sum(llh))
 }
 
-full_llh = function(xi_0,Psi_bar_0,omega_0,eta_0,h_0){
-  llh = 0
-  for(i in 1:N){
-    y = vector(length = p)
-    g = vector(length = p)
-    temp_2 = 0
-    for(j in 1:p){
-      y[j] = (Y[i,j] - xi_0[j])/omega_0[j,j]
-      g[j] = y[j]*exp(-0.5*W(h_0[j]*y[j]^2))
-      temp_2 = temp_2 + 0.5*W(h_0[j]*y[j]^2) - log(h_0[j]*y[j]^2 + exp(W(h_0[j]*y[j]^2)))
-    }
-    temp_1 = -sum(log(diag(omega_0)))
-    temp_3 = log(2) - 0.5*p*log(2*pi) - 0.5 * log(det(Psi_bar_0+eta_0%*%t(eta_0))) - 0.5 * as.numeric(t(g)%*%solve(Psi_bar_0+eta_0%*%t(eta_0))%*%g)
-    con = as.numeric(t(eta_0)%*%solve(Psi_bar_0)%*%g)/sqrt(1+as.numeric(t(eta_0)%*%solve(Psi_bar_0)%*%eta_0))
-    temp_4 = log(pnorm(con))
-    llh = llh + temp_1+temp_2+temp_3+temp_4
-  }
-  return(llh)
-}
-
-ini_Psi = matrix(nrow = p,ncol = p)
-for(i_0 in 1:p){
-  ini_Psi[i_0,i_0] = 1
-  for (j_0 in (i_0+1):p){
-    if(j_0>p){
-      break
-    }else{
-      ini_Psi[j_0,i_0] = cor(Y[,i_0],Y[,j_0])
-      ini_Psi[i_0,j_0] = ini_Psi[j_0,i_0]
-    }
-  }
-}
-
+ini_Psi = cor(Y)
 ini_Gamma = solve(ini_Psi)
 
+dn_by_pn = function(x){
+  if(pnorm(x)==0){
+    return(0)
+  }else{
+    return(dnorm(x)/pnorm(x))
+  }
+}
+dn_by_pn = Vectorize(dn_by_pn)
+
+f_1 = function(A){
+  return(A%*%t(eta_est))
+}
+
 alpha_sq = as.numeric(t(eta_est)%*%ini_Gamma%*%eta_est)
-tau_bar = vector(length = N)
-v_1 = vector(length = N)
-v_2 = vector(length = N)
-for(i in 1:N){
-  tau_bar[i] = (1/sqrt(1+alpha_sq))*as.numeric(t(eta_est)%*%ini_Gamma%*%(Z_est[i,]))
-  v_1[i] = (1/sqrt(1+alpha_sq))*(tau_bar[i]+(dnorm(tau_bar[i])/pnorm(tau_bar[i])))
-  v_2[i] = (1/(1+alpha_sq))*(1 + tau_bar[i]^2 + tau_bar[i]*(dnorm(tau_bar[i])/pnorm(tau_bar[i])))
-}
+tau_bar = (1/sqrt(1+alpha_sq))*as.numeric(Z_est%*%ini_Gamma%*%eta_est)
+v_1 = (1/sqrt(1+alpha_sq))*(tau_bar+(dn_by_pn(tau_bar)))
+v_2 = (1/(1+alpha_sq))*(1 + tau_bar^2 + tau_bar*(dn_by_pn(tau_bar)))
 
-fin_Psi_term = matrix(data = rep(0,p^2),nrow = p)
-for(i in 1:N){
-  fin_Psi_term = fin_Psi_term + (v_1[i]/N)*(Z_est[i,])%*%t(eta_est) + (v_1[i]/N)*eta_est%*%t(Z_est[i,])
-}
+temp = apply(apply(v_1*Z_est,1, FUN = f_1),1,sum)
+fin_Psi = (1/N)*(t(Z_est)%*%(Z_est) + sum(v_2)*eta_est%*%t(eta_est)) - (matrix(temp,byrow = TRUE,nrow = p)+matrix(temp,byrow = FALSE,nrow = p))/N
 
-fin_Psi = matrix(data = rep(0,p^2),nrow = p)
-for(i in 1:N){
-  fin_Psi = fin_Psi+ (1/N)*(Z_est[i,])%*%t(Z_est[i,]) + (1/N)*v_2[i]*eta_est%*%t(eta_est)
-}
-fin_Psi = fin_Psi - fin_Psi_term
 h_stop = abs((llh_SN(fin_Psi)/llh_SN(ini_Psi))-1)
 
 while(h_stop>10^-9){
@@ -159,27 +114,15 @@ while(h_stop>10^-9){
   ini_Gamma = solve(ini_Psi)
   
   alpha_sq = as.numeric(t(eta_est)%*%ini_Gamma%*%eta_est)
-  tau_bar = vector(length = N)
-  v_1 = vector(length = N)
-  v_2 = vector(length = N)
-  for(i in 1:N){
-    tau_bar[i] = (1/sqrt(1+alpha_sq))*as.numeric(t(eta_est)%*%ini_Gamma%*%(Z_est[i,]))
-    v_1[i] = (1/sqrt(1+alpha_sq))*(tau_bar[i]+(dnorm(tau_bar[i])/pnorm(tau_bar[i])))
-    v_2[i] = (1/(1+alpha_sq))*(1 + tau_bar[i]^2 + tau_bar[i]*(dnorm(tau_bar[i])/pnorm(tau_bar[i])))
-  }
+  tau_bar = (1/sqrt(1+alpha_sq))*as.numeric(Z_est%*%ini_Gamma%*%eta_est)
+  v_1 = (1/sqrt(1+alpha_sq))*(tau_bar+(dn_by_pn(tau_bar)))
+  v_2 = (1/(1+alpha_sq))*(1 + tau_bar^2 + tau_bar*(dn_by_pn(tau_bar)))
   
-  fin_Psi_term = matrix(data = rep(0,p^2),nrow = p)
-  for(i in 1:N){
-    fin_Psi_term = fin_Psi_term + (v_1[i]/N)*(Z_est[i,])%*%t(eta_est) + (v_1[i]/N)*eta_est%*%t(Z_est[i,])
-  }
-  
-  fin_Psi = matrix(data = rep(0,p^2),nrow = p)
-  for(i in 1:N){
-    fin_Psi = fin_Psi+ (1/N)*(Z_est[i,])%*%t(Z_est[i,]) + (1/N)*v_2[i]*eta_est%*%t(eta_est)
-  }
-  fin_Psi = fin_Psi - fin_Psi_term
+  temp = apply(apply(v_1*Z_est,1, FUN = f_1),1,sum)
+  fin_Psi = (1/N)*(t(Z_est)%*%(Z_est) + sum(v_2)*eta_est%*%t(eta_est)) - (matrix(temp,byrow = TRUE,nrow = p)+matrix(temp,byrow = FALSE,nrow = p))/N
   
   h_stop = abs((llh_SN(fin_Psi)/llh_SN(ini_Psi))-1)
+  print(h_stop)
 }
 diag_sd_inv = diag((sqrt(diag(fin_Psi)))^(-1))
 fin_Psi_bar = diag_sd_inv %*% fin_Psi %*% diag_sd_inv
@@ -187,6 +130,28 @@ fin_Psi_bar = diag_sd_inv %*% fin_Psi %*% diag_sd_inv
 ## EM is done, estimate of Psi_bar is in fin_Psi_bar
 
 ## MLE estimation ##
+
+full_llh = function(xi_0,Psi_bar_0,omega_0,eta_0,h_0){
+  y = t(solve(omega_0)%*%(t(Y) - xi_0))
+  g = matrix(nrow = N,ncol = p)
+  temp_2 = matrix(nrow = N,ncol = p)
+  for(j in 1:p){
+    g[,j] = y[,j]*exp(-0.5*W(h_0[j]*y[,j]^2))
+    temp_2[,j] =  0.5*W(h_0[j]*y[,j]^2) - log(h_0[j]*y[,j]^2 + exp(W(h_0[j]*y[,j]^2)))
+  }
+  
+  Inv_Psi_0 = solve(Psi_bar_0)
+  
+  Inv_Omega_0 = solve(Psi_bar_0+eta_0%*%t(eta_0))
+  # chol_Inv_Omega_0 = t(chol(Inv_Omega_0))
+  m_1 = g%*%t(chol(Inv_Omega_0))
+  temp = 0.5*apply(m_1,1,FUN = sum_of_square)
+  temp_1 = -N*sum(log(diag(omega_0)))
+  temp_3 = log(2) - 0.5*p*log(2*pi) - 0.5 * log(det(Psi_bar_0+eta_0%*%t(eta_0))) - temp
+  temp_4 = pnorm((g%*%Inv_Psi_0%*%eta_0)/sqrt(1+as.numeric(t(eta_0)%*%Inv_Psi_0%*%eta_0)),log.p = TRUE)
+  llh = temp_1 + sum(temp_2) + sum(temp_3) + sum(temp_4)
+  return(llh)
+}
 
 full_llh_2 = function(a){
   xi_0 = a[1:p]
