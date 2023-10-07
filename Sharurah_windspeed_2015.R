@@ -1,4 +1,7 @@
-data = read.csv("/Users/mondals/Documents/Research/Skew-normal-tukey-h/KACARE-Order-5714-20180730090948/Sharurah-Hourly_Data.csv",sep = ",",header = TRUE)
+# Read the windspeed dataset given on GitHub
+# We thank KA.CARE for providing the wind speed data
+
+data = read.csv(file.choose(),sep = ",",header = TRUE)
 
 data = data[,c(4,17,18,19)]
 data$day = as.numeric(format(strptime(data$Date, format="%d/%m/%Y %H:%M"),"%d"))
